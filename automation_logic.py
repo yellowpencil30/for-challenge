@@ -87,6 +87,15 @@ class Automation_Worker(QObject):
     def _start_browser(self, site):
         local_driver_path = self._get_webdriver()
         chrome_options = Options()
+        try:
+            user_name = os.getlogin()
+            # 일반 크롬과 섞이지 않게 'AutomationProfile'이라는 별도 폴더를 만듭니다.
+            profile_path = f"C:\\Users\\{user_name}\\AppData\\Local\\Google\\Chrome\\User Data\\AutomationProfile"
+            # 이 옵션이 있어야 "허용" 누른 것을 기억합니다.
+            chrome_options.add_argument(f"user-data-dir={profile_path}")
+        except Exception:
+            # 혹시 사용자 이름을 못 가져올 경우를 대비한 기본 경로
+            chrome_options.add_argument("user-data-dir=C:\\ChromeAutomationProfile")
         chrome_options.add_argument("--start-maximized")
         chrome_options.add_argument("--disable-extensions")
         chrome_options.add_argument("--disable-popup-blocking")
@@ -97,6 +106,7 @@ class Automation_Worker(QObject):
             # 여기를 수정해도 된다고?
             set_driver(driver)
             go_to(site)
+            self.progress.emit('화면에 보안 팝업이 뜨면 [허용]을 눌러주세요!')
             return True
         except Exception as e:
             self.error.emit(f'나이스 접속에 실패했습니다.{e}', None)
@@ -260,3 +270,12 @@ class Automation_Worker(QObject):
         except Exception as e:
             self.error.emit("저장에 실패하였습니다. 입력된 내용을 확인한 뒤 직접 클릭하여 저장해주세요.", None)
         return True
+    
+if __name__ == "__main__" :
+    temp_options = []
+    test_worker = Automation_Worker(temp_options)
+    test_worker._get_webdriver()
+    test_worker._start_browser('https://lna-testing.notyetsecure.com/')
+    click('Fetch!')
+    print('눌렀습니다')
+    time.sleep(2)
