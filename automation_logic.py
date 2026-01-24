@@ -1,281 +1,318 @@
+import sys
 import os
-from pyhwpx import Hwp
-import winreg
-import tempfile
-import requests
-from helium import *
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-import pyautogui
-import time
+import sqlite3
+from datetime import datetime
+from PyQt5.QtWidgets import *
+from PyQt5.QtGui import *
+from PyQt5.QtCore import Qt
 
-from google import genai
-from google.genai import types
-from google.cloud import storage
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, 'attendance.db')
 
-from PyQt6.QtCore import pyqtSignal, QObject
-import json
-import ast
-
-class Automation_Worker(QObject):
-    finished = pyqtSignal(object)
-    error = pyqtSignal(str, object)
-    progress = pyqtSignal(str)
-
-    def __init__(self, options):
+class AttendanceApp(QWidget):
+    def __init__(self):
         super().__init__()
-        self.options = options
-        self.browser = None
-        self.is_running = True
-        self.driver_path = None
-        self.extracted_subjects = None
-
-    def run(self):
-        try:
-            self.progress.emit("업로드 작업을 시작합니다.")
-            # 웹페이지 활성화
-            if not self._start_browser("https://ice.eduptl.kr/bpm_lgn_lg00_001.do"):
-                return
-            if not self.is_running: return
-            # 로그인
-            if not self.log_in():
-                return
-            if not self.is_running: return
-            # 학급 시간표로 이동
-            if not self.get_class_cur():
-                return
-            if not self.is_running: return
-            # 시간표 추출
-            if not self.extract_next_week_cur():
-                return
-            if not self.is_running: return
-            # 시간표 입력
-            if not self.send_week_cur():
-                return
-            if not self.is_running: return
-            self.progress.emit("모든 작업을 완료했습니다.")
-            self.finished.emit(self.browser)
-        except Exception as e:
-            self.error.emit(f"작업 중 알 수 없는 오류가 발생했습니다: {e}", self.browser)
-            self.is_running = False
-
-
-    def _get_webdriver(self):
-        # 윈도우 버전 추출
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon")
-        version, _ = winreg.QueryValueEx(key, "version")
-        local_version = version.split('.')[0]
-        winreg.CloseKey(key)
-        # 임시파일 생성
-        temp_dir = tempfile.gettempdir()
-        driver_path = os.path.join(temp_dir, "chromedriver.exe")
-        # 클라우드에서 다운
-        try:
-            storage_URL = f"https://storage.googleapis.com/school_chrome_webdriver/{local_version}/chromedriver.exe"
-            self.progress.emit('서버에서 크롬 드라이버를 다운받습니다.')
-            response = requests.get(storage_URL)
-            response.raise_for_status()
-            with open(driver_path, "wb") as f:
-                f.write(response.content)
-            return driver_path
-        except :
-            self.error.emit("크롬 드라이버가 정상적으로 다운되지 않았습니다. 크롬 버전을 업데이트 주세요.", None)
-            return None
+        self.setWindowTitle("나이스 출결 비서 - [풀네임 강제 저장 적용]")
+        self.resize(1000, 500)
+        self.setStyleSheet("background-color: #f8f9fa;") 
         
-# 크롬 설정, 사이트 접속
-    def _start_browser(self, site):
-        local_driver_path = self._get_webdriver()
-        chrome_options = Options()
+        font = QFont("Malgun Gothic", 12)
+        self.setFont(font)
+
+        self.init_ui()
+        self.date_edit.setDate(datetime.now().date())
+        
+    def init_ui(self):
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(20, 20, 20, 20) 
+        main_layout.setSpacing(15)
+
+        # 1. 상단: 날짜 선택
+        top_layout = QHBoxLayout()
+        date_label = QLabel("📅 오늘 날짜:")
+        date_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #333;")
+        top_layout.addWidget(date_label)
+        
+        self.date_edit = QDateEdit()
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setStyleSheet("background-color: white; border: 1px solid #ced4da; border-radius: 5px; padding: 5px; font-size: 18px;")
+        top_layout.addWidget(self.date_edit)
+        top_layout.addStretch()
+        main_layout.addLayout(top_layout)
+
+        # 2. 중앙 상단: 입력 바
+        input_container = QWidget()
+        input_container.setStyleSheet("background-color: white; border: 1px solid #e9ecef; border-radius: 10px;")
+        input_layout = QHBoxLayout()
+        input_layout.setContentsMargins(15, 10, 15, 10) 
+        input_layout.setSpacing(10)
+
+        input_style = "QLineEdit { font-size: 18px; background-color: #f1f3f5; border: 1px solid #ced4da; border-radius: 8px; padding: 5px; color: #495057; font-weight: bold; } QLineEdit:focus { border: 2px solid #4dabf7; background-color: white; }"
+        widget_height = 55 
+
+        self.no_input = QLineEdit()
+        self.no_input.setPlaceholderText("번호")
+        self.no_input.setFixedWidth(70)
+        self.no_input.setFixedHeight(widget_height)
+        self.no_input.setAlignment(Qt.AlignCenter)
+        self.no_input.setStyleSheet(input_style)
+        
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("이름")
+        self.name_input.setFixedWidth(150)
+        self.name_input.setFixedHeight(widget_height)
+        self.name_input.setAlignment(Qt.AlignCenter)
+        self.name_input.setStyleSheet(input_style)
+
+        self.type_combo = QComboBox()
+        self.type_combo.setFixedHeight(widget_height)
+        self.type_combo.setFixedWidth(200)
+        self.setup_colored_combobox()
+        
+        self.reason_input = QLineEdit()
+        self.reason_input.setPlaceholderText("사유 (예: 독감)")
+        self.reason_input.setFixedHeight(widget_height)
+        self.reason_input.setStyleSheet(input_style)
+        self.reason_input.setFixedWidth(250)
+
+        self.add_btn = QPushButton("➕ 추가 (Enter)")
+        self.add_btn.setFixedHeight(widget_height)
+        self.add_btn.setStyleSheet("QPushButton { background-color: #339af0; color: white; font-size: 20px; font-weight: bold; border-radius: 8px; } QPushButton:hover { background-color: #228be6; }")
+
+        input_layout.addWidget(self.no_input)
+        input_layout.addWidget(self.name_input)
+        input_layout.addWidget(self.type_combo)
+        input_layout.addWidget(self.reason_input)
+        input_layout.addWidget(self.add_btn)
+        input_layout.addStretch()
+        input_container.setLayout(input_layout)
+        main_layout.addWidget(input_container)
+
+        # [팝업 위젯]
+        self.name_popup = QListWidget(self)
+        self.name_popup.setWindowFlags(Qt.Popup) 
+        self.name_popup.setStyleSheet("QListWidget { background-color: white; border: 2px solid #4dabf7; border-radius: 5px; font-size: 16px; font-weight: bold; } QListWidget::item { padding: 8px; } QListWidget::item:selected { background-color: #e7f5ff; color: #1864ab; }")
+        self.name_popup.hide()
+
+        # 3. 중앙: 오늘 변동 명단 테이블
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["번호", "이름", "출결 종류", "사유", "⚠️ 참고사항"])
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Stretch)
+        
+        self.table.setStyleSheet("""
+            QTableWidget { background-color: white; border: 1px solid #dee2e6; border-radius: 10px; gridline-color: #f1f3f5; font-size: 16px; }
+            QHeaderView::section { font-size: 16px; background-color: #f8f9fa; color: #495057; font-weight: bold; border: none; border-bottom: 2px solid #dee2e6; padding: 5px; }
+            QTableWidget::item { padding: 8px; }
+        """)
+        
+        self.table.setFixedHeight(250)
+        main_layout.addWidget(self.table)
+        main_layout.addStretch() 
+
+        # 4. 하단: 저장 버튼
+        self.save_btn = QPushButton("💾 오늘 출결 DB에 저장하기")
+        self.save_btn.setFixedHeight(65)
+        self.save_btn.setStyleSheet("QPushButton { background-color: #40c057; color: white; font-size: 22px; font-weight: bold; border-radius: 10px; } QPushButton:hover { background-color: #37b24d; }")
+        main_layout.addWidget(self.save_btn)
+
+        self.setLayout(main_layout)
+
+        # 이벤트 연결
+        self.no_input.textChanged.connect(self.find_student_name)
+        self.name_input.textChanged.connect(self.find_student_no) 
+        
+        self.reason_input.returnPressed.connect(self.add_to_table)
+        self.add_btn.clicked.connect(self.add_to_table)
+
+        self.name_popup.itemClicked.connect(self.select_student_from_popup) 
+        self.save_btn.clicked.connect(self.save_to_db) 
+
+    def setup_colored_combobox(self):
+        model = QStandardItemModel()
+        items = [
+            ("🟢 출석인정 결석", "#2e7d32", "white"), ("🟢 출석인정 지각", "#43a047", "white"), ("🟢 출석인정 조퇴", "#66bb6a", "black"), ("🟢 출석인정 결과", "#a5d6a7", "black"),
+            ("🔴 질병 결석", "#c62828", "white"), ("🔴 질병 지각", "#e53935", "white"), ("🔴 질병 조퇴", "#ef5350", "black"), ("🔴 질병 결과", "#ffcdd2", "black"),
+            ("⚫ 미인정 결석", "#212121", "white"), ("⚫ 미인정 지각", "#616161", "white"), ("⚫ 미인정 조퇴", "#9e9e9e", "white"), ("⚫ 미인정 결과", "#e0e0e0", "black"),
+            ("🟣 기타 결석", "#4527a0", "white"), ("🟣 기타 지각", "#5e35b1", "white"), ("🟣 기타 조퇴", "#7e57c2", "white"), ("🟣 기타 결과", "#b39ddb", "black")
+        ]
+        for text, bg_color, text_color in items:
+            item = QStandardItem(text)
+            item.setBackground(QColor(bg_color))
+            item.setForeground(QColor(text_color))
+            item.setFont(QFont("Malgun Gothic", 16, QFont.Bold))
+            model.appendRow(item)
+        self.type_combo.setModel(model)
+        self.type_combo.setStyleSheet("QComboBox { font-size: 18px; background-color: white; border: 1px solid #ced4da; border-radius: 8px; padding: 5px; font-weight: bold; } QComboBox::drop-down { border: none; }")
+
+    def find_student_name(self):
+        no_text = self.no_input.text()
+        if not no_text: 
+            self.name_input.blockSignals(True)
+            self.name_input.clear()
+            self.name_input.blockSignals(False)
+            return
+
         try:
-            user_name = os.getlogin()
-            # 일반 크롬과 섞이지 않게 'AutomationProfile'이라는 별도 폴더를 만듭니다.
-            profile_path = f"C:\\Users\\{user_name}\\AppData\\Local\\Google\\Chrome\\User Data\\AutomationProfile"
-            # 이 옵션이 있어야 "허용" 누른 것을 기억합니다.
-            chrome_options.add_argument(f"user-data-dir={profile_path}")
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM students WHERE student_no = ? AND status = '재학'", (no_text,))
+            result = cursor.fetchone()
+            conn.close()
+
+            if result:
+                self.name_input.blockSignals(True)
+                self.name_input.setText(result[0])
+                self.name_input.blockSignals(False)
         except Exception:
-            # 혹시 사용자 이름을 못 가져올 경우를 대비한 기본 경로
-            chrome_options.add_argument("user-data-dir=C:\\ChromeAutomationProfile")
-        chrome_options.add_argument("--start-maximized")
-        chrome_options.add_argument("--disable-extensions")
-        chrome_options.add_argument("--disable-popup-blocking")
-        service = Service(executable_path=local_driver_path)
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        self.progress.emit('나이스에 접속합니다.')
-        try:
-            # 여기를 수정해도 된다고?
-            set_driver(driver)
-            go_to(site)
-            self.progress.emit('화면에 보안 팝업이 뜨면 [허용]을 눌러주세요!')
-            return True
-        except Exception as e:
-            self.error.emit(f'나이스 접속에 실패했습니다.{e}', None)
-            return False
+            pass
 
-    def log_in(self):
-        # 로컬네트워크 허용을 위한 시간
-        time.sleep(10)
-        password = self.options.get("neis_pw")
-        try:
-            self.progress.emit('로그인합니다.')
-            click(S('//*[@id="btnLgn"]'))
-            wait_until(S('//*[@id="kc_content_default"]/table/tbody/tr/td[2]/div/div[1]/table/tbody/tr/td[2]/input').exists)
-            write(password, into=S('//*[@id="kc_content_default"]/table/tbody/tr/td[2]/div/div[1]/table/tbody/tr/td[2]/input'))
-            press(ENTER)
-            # try:
-            #     wait_until(Text("로그아웃").exists, timeout_secs=10) 
-            #     time.sleep(5) # 임시 대기 (실제 요소 확인으로 교체 권장)
-            #     self.progress.emit('로그인 성공!')
-            #     return True
-            # except Exception:
-            #     raise Exception("로그인 후 메인 화면으로 진입하지 못했습니다.")
-        except Exception as e:
-            self.error.emit(f"로그인에 실패하였습니다. 비밀번호를 확인해주세요.", None)
-            return False
+    # ★ [기능 강화] 이름 일부만 쳐도 팝업이 무조건 뜨도록 변경
+    def find_student_no(self):
+        name_text = self.name_input.text()
+        if not name_text: 
+            self.no_input.blockSignals(True)
+            self.no_input.clear()
+            self.no_input.blockSignals(False)
+            self.name_popup.hide()
+            return
 
-    def get_class_cur(self):
-        self.progress.emit('학급 시간표로 이동합니다.')
-        target_week = self.options.get("week_text")
         try:
-            wait_until(S('//*[@id="https://ice.neis.go.kr/cmc_fcm_lg01_000.do?data=W0lPZDhSZ0JNWmlSTGhIakc1ZURyaUVKZ1h6c0xRV3B4NlpYU0ZHMWc0UHFxN2lVOWZuaUFTbUhFak1TT3dwV2RYYXRZUmpTRnp3VmN3eUM5L3N2MWRoQVl2YWNQOVNVY0JFa25iNFkwTWVwZ2JlTVJKYjJPOThnekwrVXJ5bTdYOFNjam9FRk9lQkJCN0tvUnF3MmpORXZ5blRURTMxdngrNzZyaXJoM3dzdz0="]').exists)
-            click(S('//*[@id="https://ice.neis.go.kr/cmc_fcm_lg01_000.do?data=W0lPZDhSZ0JNWmlSTGhIakc1ZURyaUVKZ1h6c0xRV3B4NlpYU0ZHMWc0UHFxN2lVOWZuaUFTbUhFak1TT3dwV2RYYXRZUmpTRnp3VmN3eUM5L3N2MWRoQVl2YWNQOVNVY0JFa25iNFkwTWVwZ2JlTVJKYjJPOThnekwrVXJ5bTdYOFNjam9FRk9lQkJCN0tvUnF3MmpORXZ5blRURTMxdngrNzZyaXJoM3dzdz0="]'))
-            click('학급담임')
-            click('시간표관리')
-            click('학급시간표관리')
-            wait_until(Button('조회').exists)
-            click('조회')
-            if target_week >=15:
-                click('13주차')
-                time.sleep(1)
-                # 가능하면 수정
-                pyautogui.press('pagedown')
-                click(str(target_week))
-            else: click(str(target_week))
-            return True
-        except Exception as e:
-            self.error.emit(f"학급 시간표로 이동하지 못하였습니다.", None)
-            return False
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            # 이름에 입력한 글자가 '포함'된 모든 학생 검색
+            cursor.execute("SELECT student_no, name FROM students WHERE name LIKE ? AND status = '재학'", (f"%{name_text}%",))
+            results = cursor.fetchall()
+            conn.close()
 
-# gemini 관련
-    def _get_dev_api_key(self):
-        try:
-            api_key = None
-            key_file_name = "gen-lang-client-0927426011-d03a25f67853.json"
-            key_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), key_file_name)
-            storage_client = storage.Client.from_service_account_json(key_path)
-            bucket_name = "secrets-key"
-            secret_file_name = "secrets.json"
-            bucket = storage_client.bucket(bucket_name)
-            blob = bucket.blob(secret_file_name)
-            secrets_string = blob.download_as_string()
-            secrets_data = json.loads(secrets_string)
-            return secrets_data.get("gemini_api_key")
-        except Exception as e:
-            self.error.emit(f"개발자 API 키 로드 실패", None)
-            return False
+            if results:
+                # 1명이든 여러 명이든 무조건 팝업을 띄워서 명부상 이름을 보여줌
+                self.name_popup.clear()
+                for r in results:
+                    self.name_popup.addItem(f"{r[0]}번 {r[1]}") # 명부상 풀네임 표시
+                
+                # 팝업 위치 고정
+                global_pos = self.name_input.mapToGlobal(self.name_input.rect().bottomLeft())
+                self.name_popup.setGeometry(global_pos.x(), global_pos.y(), self.name_input.width(), 100)
+                self.name_popup.show()
+                self.name_popup.setCurrentRow(0)
+
+                # 단, 검색된 사람이 딱 1명이면 편의를 위해 번호/이름 자동 완성 (센서 끄고)
+                if len(results) == 1:
+                    self.no_input.blockSignals(True)
+                    self.no_input.setText(str(results[0][0]))
+                    self.no_input.blockSignals(False)
+            else:
+                self.name_popup.hide()
+
+        except Exception:
+            pass
+
+    def select_student_from_popup(self, item):
+        selected_text = item.text() 
+        parts = selected_text.split("번 ")
         
-#  pdf로 변환하는 코드
-    def hwp_pdf_converter(self, original_path):
-        self.progress.emit('파일 확장자를 확인합니다.')
-        try:
-            temp_dir = tempfile.gettempdir()
-            pdf_name = "temp.pdf"
-            temp_pdf_path = os.path.join(temp_dir, pdf_name)
-            # 실제 변환 코드
-            hwp = Hwp(visible=False)
-            hwp.open(original_path)
-            hwp.save_as(temp_pdf_path, format="PDF")
-            time.sleep(1)
-            hwp.quit()
-            return temp_pdf_path
-        except Exception as e:
-            self.error.emit("파일 변환 실패. pdf로 변환해서 시도해주세요", None)
-            return None
+        self.no_input.blockSignals(True)
+        self.name_input.blockSignals(True)
+        # ★ [핵심] 팝업에서 선택한 명부상 진짜 '풀네임'이 입력창에 박힘
+        self.no_input.setText(parts[0]) 
+        self.name_input.setText(parts[1]) 
+        self.name_input.blockSignals(False)
+        self.no_input.blockSignals(False)
 
-    def extract_next_week_cur(self):
-        self.progress.emit('Gemini로 시간표 추출을 시작합니다.')
-        target_file = self.options.get("file_path")
-        target_class = self.options.get("class_number")
-        ext = os.path.splitext(target_file)[1].lower()
-        # 변환 여부 확인
-        if ext in ['.hwp', '.hwpx']:
-            converted_path = self.hwp_pdf_converter(target_file)
-            if converted_path is None:
-                self.error.emit('변환에 실패하여 종료합니다', None)
-                return
-            target_file = converted_path
-        # Gemini 실행
-        if self.options['use_dev_api']:
-            api_key = self._get_dev_api_key()
-            self.progress.emit("GEMINI_API_SUCCESS")
+        self.name_popup.hide() 
+        self.type_combo.setFocus() 
+
+    def keyPressEvent(self, event):
+        if self.name_popup.isVisible() and event.key() == Qt.Key_Return:
+            current_item = self.name_popup.currentItem()
+            if current_item:
+                self.select_student_from_popup(current_item)
         else:
-            api_key = self.options.get('private_api_key')
+            super().keyPressEvent(event)
+
+    # ★ [최종 방어] 테이블에 넣을 때 한 번 더 풀네임 검사!
+    def add_to_table(self):
+        no = self.no_input.text()
+        entered_name = self.name_input.text() # 현재 화면에 입력된 이름 (예: '철수')
+        att_type = self.type_combo.currentText()
+        reason = self.reason_input.text()
+
+        if not entered_name or not no:
+            QMessageBox.warning(self, "알림", "번호와 이름을 확인해주세요.")
+            return
+
+        # ★ DB를 다시 조회해서 정확한 풀네임으로 교체 (나이스 매크로용 방어)
         try:
-            with open(target_file, 'rb') as f:
-                next_week_cur = f.read()
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model='gemini-2.5-pro', contents=[types.Part.from_bytes(data=next_week_cur, mime_type ='application/pdf',), 
-                                                    f"Analyze the timetable for {target_class}반 at the bottom of the file. The result must be a Python list in raw text format, without any other explanations or Markdown code blocks (```). 출력 예시: [['사회', '과학'], ['국어', '체육']]You must follow the rules below:The final result must contain exactly 5 inner lists (for Monday to Friday). If the content of the timetable is an event and not a subject, output an empty list [] for the day result.To emphasize again, the output must only be the list string that starts with a bracket [ and ends with a bracket ]. 과목 이름이 '자율'이면 '자율활동', '동아리'면 '동아리활동', '봉사'면 '봉사활동', '진로'면 진로활동'으로 출력해."
-                                                    ]
-                                                    )
-            result = response.text
-            result = result.strip('\n')
-            result = ast.literal_eval(result)
-            self.extracted_subjects = result
-            self.progress.emit(f'시간표 추출을 완료했습니다. 해당 파일의 시간표는 \n{result}\n입니다.')
-        except Exception as e:
-            self.error.emit(f"Gemini 사용 중 오류가 발생하였습니다. api를 확인하거나 다시 시도해보세요.", None)
-            return False
-        finally:
-            try:
-                os.remove(target_file)
-            except: pass
-        return True
-    
-    def send_week_cur(self):
-        self.progress.emit('NEIS에 시간표 입력을 시작합니다.')
-        # 기본 정보 변수
-        weekdays = ['월', '화', '수', '목', '금']
-        sub_list = self.extracted_subjects
-        sub_info = {item['subject']: item for item in self.options['subjects']}
-        neis_name = self.options.get('neis_name')
-        # 하나씩 꺼내서 추출
-        for day_idx, daily_subjects in enumerate(sub_list):
-            for period_idx, target_subject in enumerate(daily_subjects):
-                found_info = sub_info.get(target_subject)
-                # 예외 처리: 만약 과목 자체를 못 찾으면
-                if not found_info:
-                    sub_name = f"{target_subject}({neis_name}"
-                else:
-                    if found_info['type_idx'] == 0:
-                        sub_name = f"{target_subject}({neis_name}"
-                    else:
-                        sub_name = f"{target_subject}({found_info['teacher']}"
-                self.progress.emit(f'{sub_name}을 입력합니다.')
-                # 실제 입력
-                try: 
-                    cell_xpath = f"//div[@aria-label='{period_idx+1}행 {weekdays[day_idx]}   ']"
-                    rightclick(S(cell_xpath))
-                    sub_xpath = f"//div[@class='cl-text' and contains(text(), '{sub_name}')]"
-                    click(S(sub_xpath))
-                except Exception as e:
-                    self.error.emit(f"시간표 입력에 실패하였습니다. 시간표와 과목 정보를 확인해주세요.", None)
-                    return False
-        try:
-            self.progress.emit('입력한 내용을 저장합니다.')
-            click('저장')
-            click('확인')
-            click('확인')
-        except Exception as e:
-            self.error.emit("저장에 실패하였습니다. 입력된 내용을 확인한 뒤 직접 클릭하여 저장해주세요.", None)
-        return True
-    
-if __name__ == "__main__" :
-    temp_options = []
-    test_worker = Automation_Worker(temp_options)
-    test_worker._get_webdriver()
-    test_worker._start_browser('https://lna-testing.notyetsecure.com/')
-    click('Fetch!')
-    print('눌렀습니다')
-    time.sleep(2)
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM students WHERE student_no = ? AND status = '재학'", (no,))
+            result = cursor.fetchone()
+            conn.close()
+
+            if result:
+                real_full_name = result[0] # DB에 있는 진짜 풀네임 (예: '김철수')
+            else:
+                QMessageBox.warning(self, "알림", "존재하지 않는 번호입니다.")
+                return
+        except Exception:
+            return
+
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        
+        # entered_name 대신 무조건 real_full_name(DB상 풀네임)을 테이블에 저장
+        for col, text in enumerate([no, real_full_name, att_type, reason]):
+            item = QTableWidgetItem(text)
+            item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row, col, item)
+            
+        alert_item = QTableWidgetItem("💡 2일 연속 결석" if "질병 결석" in att_type else "")
+        alert_item.setTextAlignment(Qt.AlignCenter)
+        self.table.setItem(row, 4, alert_item)
+
+        self.no_input.blockSignals(True)
+        self.name_input.blockSignals(True)
+        self.no_input.clear()
+        self.name_input.clear()
+        self.no_input.blockSignals(False)
+        self.name_input.blockSignals(False)
+        self.reason_input.clear()
+        self.no_input.setFocus()
+
+    def save_to_db(self):
+        row_count = self.table.rowCount()
+        if row_count == 0:
+            QMessageBox.information(self, "알림", "저장할 데이터가 없습니다.")
+            return
+
+        date_str = self.date_edit.date().toString("yyyy-MM-dd")
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        saved_count = 0
+        for row in range(row_count):
+            student_no = self.table.item(row, 0).text()
+            att_type = self.table.item(row, 2).text()
+            reason = self.table.item(row, 3).text()
+
+            cursor.execute("SELECT id FROM students WHERE student_no = ? AND status = '재학'", (student_no,))
+            student_data = cursor.fetchone()
+
+            if student_data:
+                student_id = student_data[0]
+                cursor.execute('INSERT INTO attendance (date, student_id, attendance_type, reason) VALUES (?, ?, ?, ?)', (date_str, student_id, att_type, reason))
+                saved_count += 1
+
+        conn.commit()
+        conn.close()
+
+        QMessageBox.information(self, "저장 완료", f"{saved_count}건 저장 완료!")
+        self.table.setRowCount(0)
+        self.no_input.setFocus()
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    ex = AttendanceApp()
+    ex.show()
+    sys.exit(app.exec_())
