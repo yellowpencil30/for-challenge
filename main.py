@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 import sqlite3
 from datetime import datetime
 from PyQt5.QtWidgets import *
@@ -20,7 +21,7 @@ class AttendanceApp(QWidget):
         self.main_layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("""
-            QTabBar::tab { font-size: 16px; font-weight: bold; padding: 12px 30px; background: #e9ecef; border: 1px solid #dee2e6; border-top-left-radius: 10px; border-top-right-radius: 10px; }
+            QTabBar::tab { font-size: 14px; font-weight: bold; padding: 12px 30px; background: #e9ecef; border: 1px solid #dee2e6; border-top-left-radius: 10px; border-top-right-radius: 10px; }
             QTabBar::tab:selected { background: white; border-bottom-color: white; color: #1c7ed6; }
         """)
 
@@ -51,6 +52,7 @@ class AttendanceApp(QWidget):
         top_layout = QHBoxLayout()
         top_layout.addWidget(QLabel("📅 오늘 날짜:"))
         self.date_edit = QDateEdit()
+        self.date_edit.setDate(datetime.now().date())
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setStyleSheet("background-color: white; border: 1px solid #ced4da; padding: 5px; font-size: 18px;")
         self.date_edit.dateChanged.connect(self.load_today_attendance)
@@ -121,39 +123,51 @@ class AttendanceApp(QWidget):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
 
-        # 상단 입력 바 (엔터 기능 추가)
         mgmt_input_group = QGroupBox("➕ 신규 학생 등록 및 전입")
         mgmt_input_layout = QHBoxLayout(mgmt_input_group)
         
         self.new_no_input = QLineEdit(); self.new_no_input.setPlaceholderText("번호"); self.new_no_input.setFixedWidth(80); self.new_no_input.setFixedHeight(45)
         self.new_name_input = QLineEdit(); self.new_name_input.setPlaceholderText("학생 이름"); self.new_name_input.setFixedWidth(150); self.new_name_input.setFixedHeight(45)
-        
-        # ★ [요구사항 1] 엔터 키 누르면 등록 기능 연결
         self.new_no_input.returnPressed.connect(self.add_new_student)
         self.new_name_input.returnPressed.connect(self.add_new_student)
 
         self.add_student_btn = QPushButton("등록하기 (Enter)")
         self.add_student_btn.setFixedHeight(45); self.add_student_btn.setStyleSheet("background-color: #1c7ed6; color: white; font-weight: bold; padding: 0 20px; border-radius: 5px;")
         self.add_student_btn.clicked.connect(self.add_new_student)
+        self.batch_add_btn = QPushButton("📁 대량 등록")
+        self.batch_add_btn.setFixedHeight(45)
+        self.batch_add_btn.setStyleSheet("background-color: #5c7cfa; color: white; font-weight: bold; padding: 0 15px; border-radius: 5px;")
+        self.batch_add_btn.clicked.connect(self.show_batch_add_dialog)
 
-        mgmt_input_layout.addWidget(QLabel("번호:")); mg_input_layout = mgmt_input_layout
-        mg_input_layout.addWidget(self.new_no_input); mg_input_layout.addWidget(QLabel("이름:")); mg_input_layout.addWidget(self.new_name_input)
-        mg_input_layout.addWidget(self.add_student_btn); mg_input_layout.addStretch()
+        # ★ [추가] 전출 학생 표시 체크박스
+        self.show_inactive_chk = QCheckBox("전출 학생 표시")
+        self.show_inactive_chk.setChecked(False) # 기본 미체크
+        self.show_inactive_chk.stateChanged.connect(self.load_all_students)
+
+        mgmt_input_layout.addWidget(QLabel("번호:")); mgmt_input_layout.addWidget(self.new_no_input)
+        mgmt_input_layout.addWidget(QLabel("이름:")); mgmt_input_layout.addWidget(self.new_name_input)
+        mgmt_input_layout.addWidget(self.add_student_btn)
+        mgmt_input_layout.addSpacing(20) # 간격 살짝 띄우기
+        mgmt_input_layout.addWidget(self.add_student_btn)
+        mgmt_input_layout.addWidget(self.batch_add_btn) # 버튼 배치
+        mgmt_input_layout.addWidget(self.show_inactive_chk) # 체크박스 추가
+        mgmt_input_layout.addStretch()
         layout.addWidget(mgmt_input_group)
 
-        # 중앙: 학생 명단 테이블
-        list_group = QGroupBox("📋 전체 학생 명부 (상태 클릭 시 변경 가능)")
+        # 중앙 테이블 (4칸 구조 유지)
+        list_group = QGroupBox("📋 전체 학생 명부 (수정/삭제: 셀 수정 및 Delete 키)")
         list_layout = QVBoxLayout(list_group)
-        
-        # 상태 변경일 컬럼 포함
         self.student_list_table = QTableWidget(0, 4)
-        self.student_list_table.setHorizontalHeaderLabels(["학급 번호", "이름", "상태 (클릭하여 변경)", "상태 변경일"])
+        self.student_list_table.setHorizontalHeaderLabels(["학급 번호", "이름", "상태 (변경)", "상태 변경 기록"])
         self.student_list_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.student_list_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        
+        # ★ 실시간 수정 및 키 이벤트 연결
+        self.student_list_table.itemChanged.connect(self.update_student_info_db)
+        self.student_list_table.keyPressEvent = self.student_table_key_event
+        
         list_layout.addWidget(self.student_list_table)
         layout.addWidget(list_group)
 
-        # 하단 새로고침 버튼만 유지 (전출 버튼 삭제)
         self.refresh_btn = QPushButton("🔄 명단 새로고침"); self.refresh_btn.setFixedHeight(45)
         self.refresh_btn.clicked.connect(self.load_all_students)
         layout.addWidget(self.refresh_btn)
@@ -162,52 +176,99 @@ class AttendanceApp(QWidget):
     # 학생 관리 탭 기능 로직 (상태 드롭다운 및 재전입 처리)
     # ---------------------------------------------------------
     def load_all_students(self):
+        self.student_list_table.blockSignals(True) # 수정 이벤트 잠시 차단
         self.student_list_table.setRowCount(0)
+        
+        # ★ 체크박스 상태 확인
+        show_all = self.show_inactive_chk.isChecked()
+        
         try:
             conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
-            cursor.execute("SELECT student_no, name, status, status_date, id FROM students ORDER BY student_no ASC")
+            if show_all:
+                # 모든 학생 로드
+                cursor.execute("SELECT student_no, name, status, status_date, id FROM students ORDER BY student_no ASC")
+            else:
+                # 재학, 전입 상태인 학생만 로드
+                cursor.execute("SELECT student_no, name, status, status_date, id FROM students WHERE status IN ('재학', '전입') ORDER BY student_no ASC")
+            
             rows = cursor.fetchall(); conn.close()
 
             for r in rows:
                 row_idx = self.student_list_table.rowCount()
                 self.student_list_table.insertRow(row_idx)
+                is_inactive = r[2] in ["전출", "면제"]
                 
                 # 번호, 이름
                 for col in [0, 1]:
-                    item = QTableWidgetItem(str(r[col])); item.setTextAlignment(Qt.AlignCenter)
+                    item = QTableWidgetItem(str(r[col]))
+                    item.setTextAlignment(Qt.AlignCenter)
+                    item.setData(Qt.UserRole, r[4]) # ID 저장
+                    if is_inactive:
+                        item.setBackground(QColor("#f1f3f5")); item.setForeground(QColor("#adb5bd"))
                     self.student_list_table.setItem(row_idx, col, item)
                 
-                # ★ [요구사항 3] 상태 드롭다운 (재학, 전출, 면제)
+                # 상태 콤보박스
                 status_combo = QComboBox()
-                status_combo.addItems(["재학", "전출", "면제"])
+                status_combo.addItems(["재학", "전입", "전출", "면제"])
                 status_combo.setCurrentText(r[2])
-                # 학생 고유 ID를 콤보박스 속성에 숨겨둠
                 status_combo.setProperty("student_id", r[4])
+                if is_inactive:
+                    status_combo.setStyleSheet("background-color: #f1f3f5; color: #adb5bd; border: none;")
                 status_combo.currentTextChanged.connect(self.update_student_status_db)
                 self.student_list_table.setCellWidget(row_idx, 2, status_combo)
 
-                # 상태 변경일
-                date_item = QTableWidgetItem(str(r[3]) if r[3] else "-")
+                # 날짜 기록
+                date_item = QTableWidgetItem(str(r[3]))
                 date_item.setTextAlignment(Qt.AlignCenter)
+                if is_inactive:
+                    date_item.setBackground(QColor("#f1f3f5")); date_item.setForeground(QColor("#adb5bd"))
                 self.student_list_table.setItem(row_idx, 3, date_item)
-        except Exception as e: print(f"명단 로드 오류: {e}")
+                
+        except Exception as e: print(f"로드 오류: {e}")
+        self.student_list_table.blockSignals(False)
 
-    def update_student_status_db(self, new_status):
-        """콤보박스 변경 시 즉시 DB 반영"""
-        combo = self.sender()
-        student_id = combo.property("student_id")
-        today = datetime.now().strftime("%Y-%m-%d")
-        
+    def update_student_info_db(self, item):
+        """셀 수정 시 DB 즉시 반영"""
+        student_id = item.data(Qt.UserRole)
+        field = "student_no" if item.column() == 0 else "name"
         try:
             conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
-            cursor.execute("UPDATE students SET status = ?, status_date = ? WHERE id = ?", (new_status, today, student_id))
+            cursor.execute(f"UPDATE students SET {field} = ? WHERE id = ?", (item.text(), student_id))
             conn.commit(); conn.close()
-            # 날짜 표시 갱신을 위해 새로고침 없이 해당 행의 날짜만 살짝 변경 (UX)
-            self.load_all_students() 
-        except Exception as e: QMessageBox.critical(self, "오류", f"상태 변경 실패: {e}")
+        except: pass
+
+    def student_table_key_event(self, event):
+        """Delete 키로 삭제 처리"""
+        if event.key() == Qt.Key_Delete:
+            selected = self.student_list_table.currentRow()
+            if selected >= 0:
+                name = self.student_list_table.item(selected, 1).text()
+                sid = self.student_list_table.item(selected, 0).data(Qt.UserRole)
+                if QMessageBox.question(self, "삭제", f"[{name}] 학생을 삭제할까요?", QMessageBox.Yes|QMessageBox.No) == QMessageBox.Yes:
+                    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+                    cursor.execute("DELETE FROM students WHERE id = ?", (sid,))
+                    conn.commit(); conn.close()
+                    self.load_all_students()
+        else:
+            QTableWidget.keyPressEvent(self.student_list_table, event)
+
+    def update_student_status_db(self, new_status):
+        """상태 변경 시 날짜 누적 기록 및 즉시 반영"""
+        student_id = self.sender().property("student_id")
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+            cursor.execute("SELECT status_date FROM students WHERE id = ?", (student_id,))
+            old_log = cursor.fetchone()[0]
+            # ★ 날짜 누적: 기존기록, 오늘(상태)
+            new_log = f"{old_log}, {today}({new_status})" if old_log else f"{today}({new_status})"
+            cursor.execute("UPDATE students SET status = ?, status_date = ? WHERE id = ?", (new_status, new_log, student_id))
+            conn.commit(); conn.close()
+            self.load_all_students() # 필터링 조건에 따라 목록 자동 갱신
+        except: pass
 
     def add_new_student(self):
-        """학생 추가 (재전입 로직 포함)"""
+        """학생 추가 (재전입 시 날짜 누적 로직)"""
         no = self.new_no_input.text(); name = self.new_name_input.text()
         if not no or not name: return
         
@@ -215,27 +276,100 @@ class AttendanceApp(QWidget):
         try:
             conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
             
-            # ★ [요구사항 4] 재전입 학생인지 확인 (이름과 번호가 일치하는 전출/면제자 검색)
-            cursor.execute("SELECT id, status FROM students WHERE student_no = ? AND name = ?", (no, name))
+            # 재전입 학생인지 확인
+            cursor.execute("SELECT id, status, status_date FROM students WHERE student_no = ? AND name = ?", (no, name))
             existing = cursor.fetchone()
             
             if existing:
-                student_id, current_status = existing
+                student_id, current_status, old_dates = existing
                 if current_status != '재학':
                     reply = QMessageBox.question(self, "재전입 확인", 
                         f"[{name}] 학생은 현재 '{current_status}' 상태입니다.\n이 기록을 사용하여 '재학' 상태로 변경(재전입)하시겠습니까?", 
                         QMessageBox.Yes | QMessageBox.No)
                     if reply == QMessageBox.Yes:
-                        cursor.execute("UPDATE students SET status = '재학', status_date = ? WHERE id = ?", (today, student_id))
+                        # ★ 기존 날짜가 있으면 그 뒤에 덧붙이고, 없으면 오늘 날짜만 저장
+                        new_date_log = f"{old_dates}, {today}(재전입)" if old_dates else f"{today}(재전입)"
+                        cursor.execute("UPDATE students SET status = '재학', status_date = ? WHERE id = ?", (new_date_log, student_id))
                         conn.commit(); conn.close()
                         self.load_all_students(); self.new_no_input.clear(); self.new_name_input.clear(); return
 
-            # 중복이 아니면 신규 등록
+            # 신규 등록
             cursor.execute("INSERT INTO students (student_no, name, status, status_date) VALUES (?, ?, '재학', ?)", (no, name, today))
             conn.commit(); conn.close()
             self.new_no_input.clear(); self.new_name_input.clear()
             self.load_all_students()
         except Exception as e: QMessageBox.critical(self, "오류", f"등록 실패: {e}")
+
+    def show_batch_add_dialog(self):
+        """대량 등록 팝업창 띄우기"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("학생 대량 등록")
+        dialog.setFixedWidth(400)
+        d_layout = QVBoxLayout(dialog)
+
+        d_layout.addWidget(QLabel("<b>1. 등록할 이름들을 입력하세요.</b><br>(쉼표, 한 칸 띄우기, 줄바꿈 모두 허용)"))
+        
+        name_text_edit = QTextEdit()
+        name_text_edit.setPlaceholderText("예: 김철수, 이영희\n박민수 최유리")
+        d_layout.addWidget(name_text_edit)
+
+        # 시작 번호 설정
+        start_no_layout = QHBoxLayout()
+        start_no_layout.addWidget(QLabel("<b>2. 시작 번호:</b>"))
+        start_no_spin = QSpinBox()
+        start_no_spin.setRange(1, 100)
+        
+        # 현재 마지막 번호를 찾아 기본값 설정
+        try:
+            conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+            cursor.execute("SELECT MAX(student_no) FROM students WHERE status IN ('재학', '전입')")
+            last_no = cursor.fetchone()[0]
+            start_no_spin.setValue((last_no if last_no else 0) + 1)
+            conn.close()
+        except: start_no_spin.setValue(1)
+        
+        start_no_layout.addWidget(start_no_spin)
+        start_no_layout.addStretch()
+        d_layout.addLayout(start_no_layout)
+
+        # 실행 버튼
+        run_btn = QPushButton("🚀 한 번에 등록하기")
+        run_btn.setFixedHeight(45)
+        run_btn.setStyleSheet("background-color: #37b24d; color: white; font-weight: bold; border-radius: 5px;")
+        d_layout.addWidget(run_btn)
+
+        def run_batch():
+            text = name_text_edit.toPlainText().strip()
+            if not text: return
+
+            # ★ 정규표현식으로 쉼표, 공백, 줄바꿈을 기준으로 이름 분리
+            names = re.split(r'[,\s\n]+', text)
+            names = [n for n in names if n] # 빈 문자열 제거
+            
+            start_no = start_no_spin.value()
+            today = datetime.now().strftime("%Y-%m-%d")
+            
+            conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+            added_count = 0
+            
+            for i, name in enumerate(names):
+                current_no = start_no + i
+                # 중복 확인 (이미 해당 번호에 재학 중인 학생이 있는지)
+                cursor.execute("SELECT id FROM students WHERE student_no = ? AND status IN ('재학', '전입')", (current_no,))
+                if cursor.fetchone():
+                    continue # 중복 번호는 일단 건너뜀 (안전)
+                
+                cursor.execute("INSERT INTO students (student_no, name, status, status_date) VALUES (?, ?, '재학', ?)", 
+                               (current_no, name, today))
+                added_count += 1
+            
+            conn.commit(); conn.close()
+            QMessageBox.information(dialog, "등록 완료", f"{added_count}명의 학생이 등록되었습니다.")
+            dialog.accept()
+            self.load_all_students()
+
+        run_btn.clicked.connect(run_batch)
+        dialog.exec_()
 
     def process_transfer_out(self):
         """선택된 학생을 전출 상태로 변경"""
